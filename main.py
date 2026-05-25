@@ -20,10 +20,10 @@ except:
     pass
 
 WS_SUBPROTOCOL = 'v1.phonescoring.jd.ubisoft.com'
-ACCEL_ACQUISITION_FREQ_HZ = 200.0
+ACCEL_ACQUISITION_FREQ_HZ = 30.0   # FIX #2: honest declaration matching Kinect skeleton rate
 ACCEL_ACQUISITION_LATENCY = 0.0
 ACCEL_MAX_RANGE = 8.0
-FRAME_DURATION = 0.015
+FRAME_DURATION = 1.0 / 30.0        # FIX #3: aligned to Kinect 30fps skeleton rate
 
 TARGET_WIDTH = 640
 TARGET_HEIGHT = 480
@@ -32,10 +32,11 @@ KINECT_X_RANGE = 0.6
 KINECT_Y_RANGE = 0.6
 KINECT_Z_CENTER = 1.5
 KINECT_Z_RANGE = 1.0
-ACCEL_SCALE = 40.0
-Y_AXIS_SCALE = 1.8 
-WIIMOTE_LENGTH = 40 
-WIIMOTE_WIDTH = 10 
+ACCEL_SCALE = 18.0                  # FIX #6: lowered from 40.0 to avoid clipping fast moves
+Y_AXIS_SCALE = 1.8
+WIIMOTE_LENGTH = 40
+WIIMOTE_WIDTH = 10
+POSITION_JUMP_THRESHOLD = 0.5      # FIX #4: max plausible movement per frame in normalized units
 
 COLOR_ORANGE = (0, 165, 255)
 
@@ -129,7 +130,7 @@ class VirtualController:
                     })
                     self.number_of_accels_sent += len(accel_data_to_send)
                 
-                await asyncio.sleep(FRAME_DURATION * 3)
+                await asyncio.sleep(FRAME_DURATION)  # FIX #3: was FRAME_DURATION * 3
             else:
                 await asyncio.sleep(0.1)
         
@@ -173,6 +174,9 @@ def kinect_accelerometer_thread(controller: VirtualController):
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, TARGET_WIDTH, TARGET_HEIGHT)
     
+    # FIX #1: added shared_data_lock to prevent race condition between
+    # skeleton callback thread and main display loop
+    shared_data_lock = threading.Lock()
     shared_data = {
         'last_pos_vec': None,
         'jd_x': 0.0,
@@ -193,7 +197,6 @@ def kinect_accelerometer_thread(controller: VirtualController):
         controller.disconnected = True
         return
         
-    # Enable color + skeleton streams
     kinect.video_stream.open(
         nui.ImageStreamType.Video, 2,
         nui.ImageResolution.Resolution640x480,
@@ -215,14 +218,18 @@ def kinect_accelerometer_thread(controller: VirtualController):
         for skeleton in frame.SkeletonData:
             if skeleton.eTrackingState == nui.SkeletonTrackingState.NOT_TRACKED:
                 continue
-                
-            if DEBUG_MODE and skeleton.eTrackingState != shared_data['last_tracking_state']:
-                state_names = {
-                    nui.SkeletonTrackingState.POSITION_ONLY: "POSITION_ONLY",
-                    nui.SkeletonTrackingState.TRACKED: "TRACKED"
-                }
-                print(f"[DEBUG] Skeleton detected! State: {state_names.get(skeleton.eTrackingState, skeleton.eTrackingState)}")
-                shared_data['last_tracking_state'] = skeleton.eTrackingState
+
+            if DEBUG_MODE:
+                with shared_data_lock:
+                    last_state = shared_data['last_tracking_state']
+                if skeleton.eTrackingState != last_state:
+                    state_names = {
+                        nui.SkeletonTrackingState.POSITION_ONLY: "POSITION_ONLY",
+                        nui.SkeletonTrackingState.TRACKED: "TRACKED"
+                    }
+                    print(f"[DEBUG] Skeleton state: {state_names.get(skeleton.eTrackingState, skeleton.eTrackingState)}")
+                    with shared_data_lock:
+                        shared_data['last_tracking_state'] = skeleton.eTrackingState
 
             if skeleton.eTrackingState != nui.SkeletonTrackingState.TRACKED:
                 continue
@@ -230,66 +237,95 @@ def kinect_accelerometer_thread(controller: VirtualController):
             joints = skeleton.SkeletonPositions
             wrist = joints[JointId.WristRight]
             
-            # Normalize to approx -1..+1 range
             dx = wrist.x / KINECT_X_RANGE
             dy = wrist.y / KINECT_Y_RANGE
             dz = (wrist.z - KINECT_Z_CENTER) / KINECT_Z_RANGE
             
             pos_vec = np.array([dx, dy, dz], dtype=np.float32)
-            
-            if shared_data['last_pos_vec'] is not None:
-                raw_accel = (pos_vec - shared_data['last_pos_vec']) * ACCEL_SCALE
+
+            # FIX #1: lock before reading last_pos_vec
+            with shared_data_lock:
+                last_pos_vec = shared_data['last_pos_vec']
+
+            if last_pos_vec is not None:
+                # FIX #4: discard frame if positional jump is implausibly large
+                # (stale last_pos_vec after tracking loss/reacquisition)
+                delta_mag = np.linalg.norm(pos_vec - last_pos_vec)
+                if delta_mag > POSITION_JUMP_THRESHOLD:
+                    if DEBUG_MODE:
+                        print(f"[DEBUG] Jump discarded: delta={delta_mag:.3f}")
+                    with shared_data_lock:
+                        shared_data['last_pos_vec'] = pos_vec.copy()
+                    has_hand = True
+                    break
+
+                raw_accel = (pos_vec - last_pos_vec) * ACCEL_SCALE
                 accel = np.clip(raw_accel, -4.0, 4.0)
-                
-                base_x = pos_vec[0] * 1.5
-                base_y = pos_vec[1] * 1.5
-                xy_mag_sq = base_x**2 + base_y**2
-                base_z = -math.sqrt(max(0.0, 1.0 - xy_mag_sq))
-                
+
+                # FIX #5: constant gravity baseline instead of pointing-device simulation
+                # A hand held naturally has gravity pulling straight down (-Y)
+                base_x = 0.0
+                base_y = -1.0
+                base_z = 0.0
+
                 jd_x = float(np.clip(base_z + accel[2], -8.0, 8.0))
                 jd_y = float(np.clip(base_x + accel[0], -8.0, 8.0))
                 jd_z = float(np.clip(base_y + accel[1], -8.0, 8.0))
-                
-                shared_data['jd_x'] = jd_x
-                shared_data['jd_y'] = jd_y
-                shared_data['jd_z'] = jd_z
-                
+
                 if controller.should_start_accelerometer:
                     with controller.accel_lock:
                         t = (jd_x, jd_y, jd_z)
-                        controller.accel_data_buffer.extend([t, t, t])
-                        
-            shared_data['last_pos_vec'] = pos_vec.copy()
-            shared_data['has_hand'] = True
-            shared_data['joints'] = joints
+                        # FIX #2: emit 1 sample per frame (ACCEL_ACQUISITION_FREQ_HZ = 30.0)
+                        # Previously tripled samples but declared 200Hz — now honest
+                        controller.accel_data_buffer.append(t)
+
+                # FIX #1: lock the full write of shared_data
+                with shared_data_lock:
+                    shared_data['jd_x'] = jd_x
+                    shared_data['jd_y'] = jd_y
+                    shared_data['jd_z'] = jd_z
+                    shared_data['last_pos_vec'] = pos_vec.copy()
+                    shared_data['has_hand'] = True
+                    shared_data['joints'] = joints
+            else:
+                with shared_data_lock:
+                    shared_data['last_pos_vec'] = pos_vec.copy()
+                    shared_data['has_hand'] = True
+                    shared_data['joints'] = joints
+
             has_hand = True
             break
             
         if not has_hand:
-            if shared_data['last_tracking_state'] is not None and shared_data['last_tracking_state'] != nui.SkeletonTrackingState.NOT_TRACKED:
-                if DEBUG_MODE:
+            if DEBUG_MODE:
+                with shared_data_lock:
+                    last_state = shared_data['last_tracking_state']
+                if last_state not in (None, nui.SkeletonTrackingState.NOT_TRACKED):
                     print("[DEBUG] Skeleton lost.")
+
+            # FIX #1: lock the full write on tracking loss
+            with shared_data_lock:
                 shared_data['last_tracking_state'] = nui.SkeletonTrackingState.NOT_TRACKED
-            
-            shared_data['last_pos_vec'] = None
-            shared_data['jd_x'] = 0.0
-            shared_data['jd_y'] = 0.0
-            shared_data['jd_z'] = 0.0
-            shared_data['has_hand'] = False
-            shared_data['joints'] = None
+                shared_data['last_pos_vec'] = None
+                shared_data['jd_x'] = 0.0
+                shared_data['jd_y'] = 0.0
+                shared_data['jd_z'] = 0.0
+                shared_data['has_hand'] = False
+                shared_data['joints'] = None
 
     kinect.skeleton_frame_ready += skeleton_frame_ready
     
     while not controller.disconnected:
         now = time.time()
+
+        # FIX #1: lock the read snapshot in the display loop
+        with shared_data_lock:
+            has_hand = shared_data['has_hand']
+            joints   = shared_data['joints']
+            jd_x     = shared_data['jd_x']
+            jd_y     = shared_data['jd_y']
+            jd_z     = shared_data['jd_z']
         
-        has_hand = shared_data['has_hand']
-        joints = shared_data['joints']
-        jd_x = shared_data['jd_x']
-        jd_y = shared_data['jd_y']
-        jd_z = shared_data['jd_z']
-        
-        # Draw overlay on color frame
         frame = color_frame[0]
         if frame is None:
             cv2.waitKey(1)
@@ -298,22 +334,22 @@ def kinect_accelerometer_thread(controller: VirtualController):
             
         frame = frame.copy()
         
-        if has_hand and frame is not None:
-            wrist_px = skeleton_to_color(kinect, joints[JointId.WristRight])
+        if has_hand and joints is not None:
+            wrist_px    = skeleton_to_color(kinect, joints[JointId.WristRight])
             shoulder_px = skeleton_to_color(kinect, joints[JointId.ShoulderRight])
-            hand_px = skeleton_to_color(kinect, joints[JointId.HandRight])
+            hand_px     = skeleton_to_color(kinect, joints[JointId.HandRight])
             
             if wrist_px and shoulder_px:
                 cv2.line(frame, shoulder_px, wrist_px, COLOR_ORANGE, 2, cv2.LINE_AA)
             if wrist_px:
                 cv2.circle(frame, wrist_px, 6, COLOR_ORANGE, -1, cv2.LINE_AA)
             if hand_px:
-                cv2.circle(frame, hand_px, 4, (0,255,255), -1, cv2.LINE_AA)
+                cv2.circle(frame, hand_px, 4, (0, 255, 255), -1, cv2.LINE_AA)
         
         delta_time = now - last_time
         if delta_time > 0:
             inst_fps = 1.0 / delta_time
-            fps = (1-FPS_SMOOTH)*fps + FPS_SMOOTH*inst_fps if fps > 0 else inst_fps
+            fps = (1 - FPS_SMOOTH) * fps + FPS_SMOOTH * inst_fps if fps > 0 else inst_fps
         last_time = now
         
         y_off = 30
@@ -329,6 +365,23 @@ def kinect_accelerometer_thread(controller: VirtualController):
         cv2.putText(frame, f'JD-> X:{jd_x:+.1f} Y:{jd_y:+.1f} Z:{jd_z:+.1f}',
                     (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_ORANGE, 1, cv2.LINE_AA)
         y_off += 25
+        
+        if has_hand and joints is not None:
+            hip_z = joints[JointId.HipCenter].z
+            if hip_z < 1.5:
+                dist_status = "Too Close!"
+                dist_color = (0, 0, 255) # Red
+            elif hip_z > 2.5:
+                dist_status = "Too Far!"
+                dist_color = (0, 0, 255) # Red
+            else:
+                dist_status = "Optimal"
+                dist_color = (0, 255, 0) # Green
+            
+            cv2.putText(frame, f'Distance: {hip_z:.1f}m - {dist_status}',
+                        (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, dist_color, 1, cv2.LINE_AA)
+            y_off += 25
+            
         cv2.putText(frame, 'By Comera', (10, y_off),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_ORANGE, 1, cv2.LINE_AA)
                     
@@ -365,8 +418,8 @@ def get_local_ip_prefix():
 async def find_console_ip(prefix: str):
     tasks = []
     for i in range(100, 151):
-         ip = f"{prefix}{i}"
-         tasks.append(check_ip(ip))
+        ip = f"{prefix}{i}"
+        tasks.append(check_ip(ip))
     for i in list(range(1, 100)) + list(range(151, 255)):
         ip = f"{prefix}{i}"
         tasks.append(check_ip(ip))
@@ -378,7 +431,8 @@ async def find_console_ip(prefix: str):
         return found_ips[0]
     else:
         common_prefixes = ["192.168.0.", "192.168.15.", "10.0.0."]
-        if prefix in common_prefixes: common_prefixes.remove(prefix)
+        if prefix in common_prefixes:
+            common_prefixes.remove(prefix)
         
         for next_prefix in common_prefixes:
             tasks = []
