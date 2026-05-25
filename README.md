@@ -10,9 +10,8 @@ By leveraging the official Kinect for Windows SDK v1.8, JD-Kinect captures true 
 
 - **Hands-Free Dancing:** Ditch the phone. Your body is the controller.
 - **True 3D Tracking:** Utilizes the Kinect's depth sensor for real metric tracking, providing superior Z-axis accuracy compared to standard webcam solutions.
-- **Visual Overlay:** Includes an OpenCV-based real-time preview of your camera feed with a skeletal tracking overlay and a dynamic distance meter to help you find the optimal tracking range.
-- **Low Latency 60Hz Output:** Interpolates the Kinect's 30Hz skeleton data to stream ultra-smooth 60Hz controller telemetry to the game.
-- **Advanced Forearm Tracking:** Blends pure wrist position with elbow-to-wrist rotational tracking to capture the exact flicks and angular gestures required to hit "Megastar".
+- **Visual Overlay:** Includes an OpenCV-based real-time preview of your camera feed with a skeletal tracking overlay.
+- **Low Latency:** Optimized to stream accelerometer data to the game with minimal latency via WebSockets.
 
 ## 🛠️ Prerequisites
 
@@ -55,7 +54,7 @@ pip install -r requirements.txt
    ```bash
    python main.py
    ```
-3. A window will pop up showing your camera feed. Stand roughly **1.5 to 2.5 meters** away from the sensor. Use the built-in distance meter on the screen to find the "Optimal" spot.
+3. A window will pop up showing your camera feed. Stand roughly **1.5 to 2.5 meters** away from the sensor. 
 4. Once you see the orange skeleton overlay on your body, the app is successfully tracking you and streaming data to the game.
 
 ---
@@ -64,10 +63,7 @@ pip install -r requirements.txt
 
 If you feel the game is not scoring your moves correctly, you can adjust the tracking sensitivity by modifying constants inside `main.py`:
 
-- `ACCEL_SCALE`: (Default: `5.5`) Increase this if your big moves are scoring poorly.
-- `SMOOTH_ALPHA`: (Default: `0.4`) Adjust the exponential smoothing filter. Lower is smoother but adds tracking latency.
-- `ROTATION_WEIGHT`: (Default: `0.35`) The amount of emphasis given to forearm rotation (elbow-to-wrist flicks) over pure wrist translation.
-- `POSITION_JUMP_THRESHOLD`: (Default: `0.5`) Guards against tracking glitches by discarding frames where the skeleton teleports implausibly far.
+- `ACCEL_SCALE`: (Default: `40.0`) Increase this if your big moves are scoring poorly.
 - `KINECT_Z_CENTER`: (Default: `1.5`) The expected depth in meters where you stand.
 - `KINECT_X_RANGE` / `KINECT_Y_RANGE`: (Default: `0.6`) The bounds for your arm's lateral/vertical range.
 
