@@ -10,7 +10,7 @@ By leveraging the official Kinect for Windows SDK v1.8, JD-Kinect captures true 
 
 - **Hands-Free Dancing:** Ditch the phone. Your body is the controller.
 - **True 3D Tracking:** Utilizes the Kinect's depth sensor for real metric tracking, providing superior Z-axis accuracy compared to standard webcam solutions.
-- **Visual Overlay:** Includes an OpenCV-based real-time preview of your camera feed with a skeletal tracking overlay.
+- **Visual Overlay:** Includes an OpenCV-based real-time preview of your camera feed with a skeletal tracking overlay and a dynamic distance meter to help you find the optimal tracking range.
 - **Low Latency:** Optimized to stream accelerometer data to the game with minimal latency via WebSockets.
 
 ## 🛠️ Prerequisites
@@ -47,6 +47,8 @@ pip install -r requirements.txt
 
 *(Alternatively, you can manually run `pip install websockets opencv-python numpy future`)*
 
+> **Note on pykinect:** This project bundles a heavily patched version of the `pykinect` library directly within the source code because the official `pip` version is fundamentally broken on modern Python 3. Our bundled version requires the `future` package (which is included in `requirements.txt`) to function correctly.
+
 ### 3. Let's Dance!
 
 1. Open Just Dance and navigate to the **"Play with your smartphone"** screen.
@@ -54,7 +56,7 @@ pip install -r requirements.txt
    ```bash
    python main.py
    ```
-3. A window will pop up showing your camera feed. Stand roughly **1.5 to 2.5 meters** away from the sensor. 
+3. A window will pop up showing your camera feed. Stand roughly **1.5 to 2.5 meters** away from the sensor. Use the built-in distance meter on the screen to find the "Optimal" spot.
 4. Once you see the orange skeleton overlay on your body, the app is successfully tracking you and streaming data to the game.
 
 ---
@@ -63,7 +65,8 @@ pip install -r requirements.txt
 
 If you feel the game is not scoring your moves correctly, you can adjust the tracking sensitivity by modifying constants inside `main.py`:
 
-- `ACCEL_SCALE`: (Default: `40.0`) Increase this if your big moves are scoring poorly.
+- `ACCEL_SCALE`: (Default: `5.5`) Increase this if your big moves are scoring poorly.
+- `POSITION_JUMP_THRESHOLD`: (Default: `0.5`) Guards against tracking glitches by discarding frames where the skeleton teleports implausibly far.
 - `KINECT_Z_CENTER`: (Default: `1.5`) The expected depth in meters where you stand.
 - `KINECT_X_RANGE` / `KINECT_Y_RANGE`: (Default: `0.6`) The bounds for your arm's lateral/vertical range.
 
@@ -78,8 +81,19 @@ If you feel the game is not scoring your moves correctly, you can adjust the tra
 
 ---
 
+## 📝 TODO
+
+- [ ] Improve scoring (currently mostly caps at 5 stars)
+- [ ] Add basic controls (Up, Down, Left, Right, Enter) for lobby navigation, coach selection
+- [ ] Add multiplayer support (tracking and scoring multiple skeletons simultaneously)
+
+---
+
 ## 🤝 Contributing
 
 Contributions, issues, and feature requests are welcome! Feel free to check the issues page or submit a pull request if you want to improve tracking accuracy, add multiplayer, or enhance the quaternion math.
 
-*Based on original concepts from the JDWebcam project by Comera.*
+## 🌟 Credits
+
+* Based on original concepts from the **[JDWebcam](https://github.com/comeraperuibe944/JDWebcam)** project by Comera.
+* Uses a heavily patched version of the open-source **[PyKinect](https://github.com/Microsoft/PTVS/wiki/PyKinect)** library (Copyright © Microsoft Corporation).
