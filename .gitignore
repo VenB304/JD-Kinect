@@ -1,0 +1,4 @@
+*.code-workspace
+Claude/
+JDWebcam/
+__pycache__/

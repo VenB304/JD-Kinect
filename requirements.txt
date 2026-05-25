@@ -1,0 +1,4 @@
+websockets>=10.0
+opencv-python>=4.7
+numpy>=1.23
+future
